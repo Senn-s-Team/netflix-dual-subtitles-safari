@@ -1,6 +1,6 @@
 <!--
-  [INPUT]: 依赖 popup.css 的样式与 popup.js 的配置绑定
-  [OUTPUT]: 对外提供 Safari 扩展弹窗双字幕选择与显示设置界面
+  [INPUT]: 依赖 popup.css 的 Neumorphism 样式与 popup.js 的配置、页面状态绑定
+  [OUTPUT]: 对外提供字幕选择，以及固定实时预览、按角色编辑的样式工作区
   [POS]: popup 模块的 DOM 壳，被 manifest action.default_popup 加载
   [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 -->
@@ -13,66 +13,226 @@
     <link rel="stylesheet" href="./popup.css">
   </head>
   <body>
-    <main>
-      <header>
-        <h1>Netflix Dual Subtitles</h1>
-      </header>
-
-      <label class="row switch">
-        <span>启用字幕覆盖</span>
-        <input id="enabled" type="checkbox">
-      </label>
-
-      <label class="row switch">
-        <span>隐藏 Netflix 原生字幕</span>
-        <input id="hideNativeSubtitles" type="checkbox">
-      </label>
-
-      <section class="track-grid" aria-label="字幕轨道">
-        <div class="column">
-          <label class="field">
-            <span>第一字幕</span>
-            <select id="primaryTrackKey"></select>
-          </label>
-
-          <label class="field">
-            <span>第一字号</span>
-            <input id="primaryFontSize" type="range" min="18" max="44" step="1">
-          </label>
-
-          <label class="field">
-            <span>第一位置</span>
-            <input id="primaryVerticalOffset" type="range" min="8" max="42" step="1">
-          </label>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <img class="brand-mark" src="../../icons/icon-48.png" width="36" height="36" alt="">
+          <div class="brand-copy">
+            <h1>Dual Subtitles</h1>
+            <div class="page-status" role="status" aria-live="polite">
+              <span id="statusDot" class="status-dot" data-state="loading"></span>
+              <span id="pageStatus">正在连接 Netflix</span>
+            </div>
+          </div>
         </div>
 
-        <div class="column">
-          <label class="field">
-            <span>第二字幕</span>
-            <select id="secondaryTrackKey"></select>
+        <label class="toggle master-toggle" title="启用字幕覆盖">
+          <span class="sr-only">启用字幕覆盖</span>
+          <input id="enabled" type="checkbox">
+          <span class="toggle-track" aria-hidden="true"></span>
+        </label>
+      </header>
+
+      <nav class="tab-list" aria-label="设置分类" role="tablist">
+        <button class="tab-button is-active" id="subtitlesTab" type="button" role="tab" aria-selected="true" aria-controls="subtitlesPanel" data-tab="subtitles">字幕</button>
+        <button class="tab-button" id="stylesTab" type="button" role="tab" aria-selected="false" aria-controls="stylesPanel" data-tab="styles">样式</button>
+      </nav>
+
+      <section id="subtitlesPanel" class="tab-panel" role="tabpanel" aria-labelledby="subtitlesTab" data-panel="subtitles">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">字幕轨道</p>
+            <h2>双语选择</h2>
+          </div>
+          <div class="action-group">
+            <button id="swapTracks" class="icon-button" type="button" title="交换两条字幕" aria-label="交换两条字幕">⇄</button>
+            <button id="reloadTracks" class="icon-button" type="button" title="重新读取字幕" aria-label="重新读取字幕">↻</button>
+          </div>
+        </div>
+
+        <div id="trackGrid" class="track-grid" aria-label="字幕轨道">
+          <article class="track-card">
+            <label class="field" for="primaryTrackKey">
+              <span class="field-label">第一字幕</span>
+              <select id="primaryTrackKey"></select>
+            </label>
+            <p id="primaryStatus" class="track-status" data-state="idle">未选择</p>
+          </article>
+
+          <article class="track-card">
+            <label class="field" for="secondaryTrackKey">
+              <span class="field-label">第二字幕</span>
+              <select id="secondaryTrackKey"></select>
+            </label>
+            <p id="secondaryStatus" class="track-status" data-state="idle">未选择</p>
+          </article>
+        </div>
+
+        <div class="settings-list">
+          <label class="setting-row" for="hideNativeSubtitles">
+            <span>
+              <strong>隐藏原生字幕</strong>
+              <small>使用插件字幕替代 Netflix 字幕</small>
+            </span>
+            <span class="toggle">
+              <input id="hideNativeSubtitles" type="checkbox">
+              <span class="toggle-track" aria-hidden="true"></span>
+            </span>
           </label>
 
-          <label class="field">
-            <span>第二字号</span>
-            <input id="secondaryFontSize" type="range" min="18" max="44" step="1">
-          </label>
-
-          <label class="field">
-            <span>第二位置</span>
-            <input id="secondaryVerticalOffset" type="range" min="8" max="42" step="1">
+          <label class="setting-row" for="timingOffsetMs">
+            <span>
+              <strong>时间偏移</strong>
+              <small>正值延后，负值提前</small>
+            </span>
+            <span class="number-control">
+              <input id="timingOffsetMs" type="number" step="100" aria-label="字幕时间偏移">
+              <span>ms</span>
+            </span>
           </label>
         </div>
       </section>
 
-      <label class="field">
-        <span>字幕列表</span>
-        <output id="trackStatus">检测中</output>
-      </label>
+      <section id="stylesPanel" class="tab-panel styles-panel" role="tabpanel" aria-labelledby="stylesTab" data-panel="styles" hidden>
+        <div class="style-stage">
+          <div class="style-toolbar">
+            <div class="role-selector" role="group" aria-label="正在编辑的字幕">
+              <button class="is-active" type="button" data-style-role="primary"><span class="role-swatch primary"></span>第一字幕</button>
+              <button type="button" data-style-role="secondary"><span class="role-swatch secondary"></span>第二字幕</button>
+            </div>
+            <button id="resetStyles" class="icon-button" type="button" title="恢复默认样式" aria-label="恢复默认样式">↺</button>
+          </div>
 
-      <label class="field">
-        <span>时间偏移 ms</span>
-        <input id="timingOffsetMs" type="number" step="100">
-      </label>
+          <div id="stylePreview" class="preview" aria-hidden="true" data-layout="balanced">
+            <span class="preview-label">实时预览</span>
+            <div id="primaryPreview" class="preview-line primary is-editing">第一字幕</div>
+            <div id="secondaryPreview" class="preview-line secondary">Second subtitle</div>
+          </div>
+        </div>
+
+        <div class="style-settings-scroll">
+          <section class="style-section" aria-labelledby="layoutTitle">
+            <h2 id="layoutTitle">位置与尺寸</h2>
+            <div class="preset-list" role="group" aria-label="双字幕位置预设">
+              <button type="button" data-layout-preset="compact">紧凑</button>
+              <button type="button" data-layout-preset="balanced">标准</button>
+              <button type="button" data-layout-preset="spacious">舒展</button>
+              <button type="button" data-layout-preset="free">自由</button>
+            </div>
+            <div class="control-grid">
+              <label class="range-field" for="styleFontSize">
+                <span class="range-heading">
+                  <span>字号</span>
+                  <output id="styleFontSizeValue" for="styleFontSize">26 px</output>
+                </span>
+                <input id="styleFontSize" type="range" min="18" max="44" step="1">
+              </label>
+
+              <label class="range-field" for="styleVerticalOffset">
+                <span class="range-heading">
+                  <span>自由位置</span>
+                  <output id="styleVerticalOffsetValue" for="styleVerticalOffset">26%</output>
+                </span>
+                <input id="styleVerticalOffset" type="range" min="8" max="42" step="1">
+              </label>
+            </div>
+          </section>
+
+          <section class="style-section" aria-labelledby="textStyleTitle">
+            <h2 id="textStyleTitle">文字</h2>
+            <div class="control-grid">
+              <label class="compact-field" for="styleFontFamily">
+                <span>字体</span>
+                <select id="styleFontFamily">
+                  <option value="system">系统</option>
+                  <option value="sans">无衬线</option>
+                  <option value="serif">衬线</option>
+                  <option value="rounded">圆体</option>
+                </select>
+              </label>
+
+              <label class="compact-field" for="styleFontWeight">
+                <span>字重</span>
+                <select id="styleFontWeight">
+                  <option value="500">中等</option>
+                  <option value="600">半粗</option>
+                  <option value="700">粗体</option>
+                  <option value="800">特粗</option>
+                </select>
+              </label>
+
+              <label class="range-field" for="styleLineHeight">
+                <span class="range-heading">
+                  <span>行高</span>
+                  <output id="styleLineHeightValue" for="styleLineHeight">1.28</output>
+                </span>
+                <input id="styleLineHeight" type="range" min="1" max="1.6" step="0.05">
+              </label>
+
+              <label class="range-field" for="styleMaxWidth">
+                <span class="range-heading">
+                  <span>最大宽度</span>
+                  <output id="styleMaxWidthValue" for="styleMaxWidth">86%</output>
+                </span>
+                <input id="styleMaxWidth" type="range" min="55" max="96" step="1">
+              </label>
+
+              <label class="compact-field" for="styleTextColor">
+                <span>文字颜色</span>
+                <span class="color-control">
+                  <input id="styleTextColor" type="color" value="#ffffff">
+                  <output id="styleTextColorValue" for="styleTextColor">#FFFFFF</output>
+                </span>
+              </label>
+
+              <label class="range-field" for="styleTextOpacity">
+                <span class="range-heading">
+                  <span>文字透明度</span>
+                  <output id="styleTextOpacityValue" for="styleTextOpacity">100%</output>
+                </span>
+                <input id="styleTextOpacity" type="range" min="40" max="100" step="5">
+              </label>
+            </div>
+          </section>
+
+          <section class="style-section" aria-labelledby="effectsStyleTitle">
+            <h2 id="effectsStyleTitle">描边与背景</h2>
+            <div class="control-grid">
+              <label class="compact-field" for="styleStrokeColor">
+                <span>描边颜色</span>
+                <span class="color-control">
+                  <input id="styleStrokeColor" type="color" value="#000000">
+                  <output id="styleStrokeColorValue" for="styleStrokeColor">#000000</output>
+                </span>
+              </label>
+
+              <label class="range-field" for="styleStrokeWidth">
+                <span class="range-heading">
+                  <span>描边宽度</span>
+                  <output id="styleStrokeWidthValue" for="styleStrokeWidth">1 px</output>
+                </span>
+                <input id="styleStrokeWidth" type="range" min="0" max="4" step="0.5">
+              </label>
+
+              <label class="compact-field" for="styleBackgroundColor">
+                <span>背景颜色</span>
+                <span class="color-control">
+                  <input id="styleBackgroundColor" type="color" value="#000000">
+                  <output id="styleBackgroundColorValue" for="styleBackgroundColor">#000000</output>
+                </span>
+              </label>
+
+              <label class="range-field" for="styleBackgroundOpacity">
+                <span class="range-heading">
+                  <span>背景透明度</span>
+                  <output id="styleBackgroundOpacityValue" for="styleBackgroundOpacity">64%</output>
+                </span>
+                <input id="styleBackgroundOpacity" type="range" min="0" max="90" step="5">
+              </label>
+            </div>
+          </section>
+        </div>
+      </section>
     </main>
     <script type="module" src="./popup.js"></script>
   </body>

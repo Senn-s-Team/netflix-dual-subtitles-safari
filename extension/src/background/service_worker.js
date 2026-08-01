@@ -9,10 +9,38 @@ const runtime = globalThis.browser ?? globalThis.chrome;
 
 const DEFAULT_SETTINGS = {
   enabled: true,
+  hideNativeSubtitles: true,
+  primaryTrackKey: "",
+  primaryLanguage: "",
   secondaryLanguage: "en",
-  fontSize: 28,
-  verticalOffset: 18,
-  timingOffsetMs: 0
+  secondaryTrackKey: "",
+  primaryFontSize: 26,
+  secondaryFontSize: 28,
+  primaryVerticalOffset: 26,
+  secondaryVerticalOffset: 18,
+  subtitleLayoutPreset: "balanced",
+  primaryFontFamily: "system",
+  secondaryFontFamily: "system",
+  primaryFontWeight: 700,
+  secondaryFontWeight: 700,
+  primaryTextColor: "#FFFFFF",
+  secondaryTextColor: "#FFFFFF",
+  primaryTextOpacity: 100,
+  secondaryTextOpacity: 100,
+  primaryStrokeWidth: 1,
+  secondaryStrokeWidth: 1,
+  primaryStrokeColor: "#000000",
+  secondaryStrokeColor: "#000000",
+  primaryBackgroundColor: "#000000",
+  secondaryBackgroundColor: "#000000",
+  primaryBackgroundOpacity: 64,
+  secondaryBackgroundOpacity: 64,
+  primaryLineHeight: 1.28,
+  secondaryLineHeight: 1.28,
+  primaryMaxWidth: 86,
+  secondaryMaxWidth: 86,
+  timingOffsetMs: 0,
+  episodeSettingsById: {}
 };
 
 runtime.runtime.onInstalled.addListener(() => {

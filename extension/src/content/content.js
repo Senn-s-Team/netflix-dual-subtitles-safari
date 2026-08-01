@@ -1,12 +1,51 @@
 /**
  * [INPUT]: 依赖 window.NetflixDualSubtitles 的轨道归一化、字幕加载、overlay 渲染与 page bridge 播放器查询
- * [OUTPUT]: 对外提供 Netflix 页面上的双字幕同步流程与轨道列表查询
+ * [OUTPUT]: 对外提供 Netflix 页面双字幕同步、按剧集配置恢复、轨道查询与手动重载
  * [POS]: content 模块入口，连接 Safari 隔离世界与 Netflix 页面主世界
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
 
 const runtime = globalThis.browser ?? globalThis.chrome;
 const modules = window.NetflixDualSubtitles;
+const EPISODE_SETTINGS_STORAGE_KEY = "episodeSettingsById";
+const EPISODE_SETTING_KEYS = new Set([
+  "primaryTrackKey",
+  "primaryLanguage",
+  "secondaryTrackKey",
+  "secondaryLanguage",
+  "primaryFontSize",
+  "secondaryFontSize",
+  "primaryVerticalOffset",
+  "secondaryVerticalOffset",
+  "subtitleLayoutPreset",
+  "primaryFontFamily",
+  "secondaryFontFamily",
+  "primaryFontWeight",
+  "secondaryFontWeight",
+  "primaryTextColor",
+  "secondaryTextColor",
+  "primaryTextOpacity",
+  "secondaryTextOpacity",
+  "primaryStrokeWidth",
+  "secondaryStrokeWidth",
+  "primaryStrokeColor",
+  "secondaryStrokeColor",
+  "primaryBackgroundColor",
+  "secondaryBackgroundColor",
+  "primaryBackgroundOpacity",
+  "secondaryBackgroundOpacity",
+  "primaryLineHeight",
+  "secondaryLineHeight",
+  "primaryMaxWidth",
+  "secondaryMaxWidth",
+  "timingOffsetMs"
+]);
+const SUBTITLE_TRACK_SETTING_KEYS = new Set([
+  "primaryTrackKey",
+  "primaryLanguage",
+  "secondaryTrackKey",
+  "secondaryLanguage"
+]);
 
 const DEFAULT_SETTINGS = {
   enabled: true,
@@ -19,6 +58,27 @@ const DEFAULT_SETTINGS = {
   secondaryFontSize: 28,
   primaryVerticalOffset: 26,
   secondaryVerticalOffset: 18,
+  subtitleLayoutPreset: "balanced",
+  primaryFontFamily: "system",
+  secondaryFontFamily: "system",
+  primaryFontWeight: 700,
+  secondaryFontWeight: 700,
+  primaryTextColor: "#FFFFFF",
+  secondaryTextColor: "#FFFFFF",
+  primaryTextOpacity: 100,
+  secondaryTextOpacity: 100,
+  primaryStrokeWidth: 1,
+  secondaryStrokeWidth: 1,
+  primaryStrokeColor: "#000000",
+  secondaryStrokeColor: "#000000",
+  primaryBackgroundColor: "#000000",
+  secondaryBackgroundColor: "#000000",
+  primaryBackgroundOpacity: 64,
+  secondaryBackgroundOpacity: 64,
+  primaryLineHeight: 1.28,
+  secondaryLineHeight: 1.28,
+  primaryMaxWidth: 86,
+  secondaryMaxWidth: 86,
   timingOffsetMs: 0
 };
 
@@ -36,7 +96,9 @@ const state = {
   refreshToken: 0,
   playerQueryId: 0,
   locationId: 0,
-  watchId: ""
+  watchId: "",
+  settingsWatchId: "",
+  settingsToken: 0
 };
 
 const overlay = modules.createSubtitleOverlay();
@@ -45,7 +107,9 @@ const store = modules.createSubtitleStore();
 boot();
 
 async function boot() {
-  state.settings = await readSettings();
+  state.watchId = readWatchId();
+  state.settings = await readSettings(state.watchId);
+  state.settingsWatchId = state.watchId;
   overlay.applySettings(state.settings);
   updateNativeSubtitleVisibility();
   await injectPageBridge();
@@ -75,24 +139,54 @@ function bindRuntimeMessages() {
   runtime.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
 
+    let shouldRefreshTracks = false;
+
     for (const [key, change] of Object.entries(changes)) {
+      if (key === EPISODE_SETTINGS_STORAGE_KEY) {
+        const episodeSettings = change.newValue?.[state.watchId];
+        if (!episodeSettings) continue;
+
+        for (const episodeKey of EPISODE_SETTING_KEYS) {
+          if (!Object.hasOwn(episodeSettings, episodeKey)) continue;
+          if (state.settings[episodeKey] === episodeSettings[episodeKey]) continue;
+          state.settings[episodeKey] = episodeSettings[episodeKey];
+          shouldRefreshTracks ||= SUBTITLE_TRACK_SETTING_KEYS.has(episodeKey);
+        }
+        continue;
+      }
+
       state.settings[key] = change.newValue;
+      shouldRefreshTracks ||= SUBTITLE_TRACK_SETTING_KEYS.has(key);
     }
 
     overlay.applySettings(state.settings);
     updateNativeSubtitleVisibility();
-    void refreshSelectedSubtitles();
+    if (shouldRefreshTracks) void refreshSelectedSubtitles();
+    else renderForCurrentTime();
   });
 }
 
 function bindPopupMessages() {
   runtime.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "NETFLIX_DUAL_SUBTITLES_RELOAD") {
+      if (!isWatchPage()) {
+        sendResponse({ ok: false });
+        return true;
+      }
+
+      clearSubtitleState();
+      requestPlayerTracks();
+      sendResponse({ ok: true });
+      return true;
+    }
+
     if (message?.type !== "NETFLIX_DUAL_SUBTITLES_GET_STATE") return false;
 
     sendResponse({
       settings: state.settings,
       tracks: state.tracks,
       loadStatus: state.loadStatus,
+      watchId: state.watchId,
       url: location.href
     });
 
@@ -108,6 +202,7 @@ function bindBridgeMessages() {
     if (event.data?.type === "load-subtitle-result" || event.data?.type === "resolve-track-url-result") return;
     if (!isWatchPage()) return;
     syncWatchState();
+    if (state.settingsWatchId !== state.watchId) return;
 
     const tracks = modules.normalizeTracks(event.data.payload);
     if (tracks.length === 0) return;
@@ -133,15 +228,26 @@ function syncWatchState() {
   if (nextWatchId === state.watchId) return;
 
   state.watchId = nextWatchId;
+  state.settingsWatchId = "";
   clearSubtitleState();
+  updateNativeSubtitleVisibility();
+  postNativeSubtitlePreference();
+  void loadSettingsForWatch(nextWatchId);
+}
 
-  if (nextWatchId) {
-    updateNativeSubtitleVisibility();
-    requestPlayerTracks();
-  } else {
-    updateNativeSubtitleVisibility();
-    postNativeSubtitlePreference();
-  }
+async function loadSettingsForWatch(watchId) {
+  const token = ++state.settingsToken;
+  const settings = await readSettings(watchId);
+  if (token !== state.settingsToken || watchId !== state.watchId) return;
+
+  state.settings = settings;
+  state.settingsWatchId = watchId;
+  overlay.applySettings(state.settings);
+  updateNativeSubtitleVisibility();
+  renderForCurrentTime();
+
+  if (watchId) requestPlayerTracks();
+  else postNativeSubtitlePreference();
 }
 
 function clearSubtitleState() {
@@ -169,6 +275,8 @@ function requestPlayerTracks() {
     postNativeSubtitlePreference();
     return;
   }
+
+  if (state.settingsWatchId !== state.watchId) return;
 
   window.postMessage({
     source: "netflix-dual-subtitles-bridge",
@@ -368,10 +476,25 @@ function pickTrack(tracks, trackKey, language) {
     ?? null;
 }
 
-function readSettings() {
+function readSettings(watchId = "") {
   return new Promise((resolve) => {
-    runtime.storage.local.get(DEFAULT_SETTINGS, (stored) => {
-      resolve(normalizeSettings(stored));
+    runtime.storage.local.get({
+      ...DEFAULT_SETTINGS,
+      [EPISODE_SETTINGS_STORAGE_KEY]: {}
+    }, (stored) => {
+      const episodeSettingsById = stored[EPISODE_SETTINGS_STORAGE_KEY] ?? {};
+      const storedSettings = { ...stored };
+      delete storedSettings[EPISODE_SETTINGS_STORAGE_KEY];
+      const settings = normalizeSettings(storedSettings);
+      const episodeSettings = episodeSettingsById[watchId];
+
+      if (watchId && episodeSettings) {
+        for (const key of EPISODE_SETTING_KEYS) {
+          if (Object.hasOwn(episodeSettings, key)) settings[key] = episodeSettings[key];
+        }
+      }
+
+      resolve(settings);
     });
   });
 }

@@ -1,9 +1,22 @@
 /**
- * [INPUT]: 依赖 DOM/Shadow DOM 渲染能力与 subtitleParser 输出的 cue 数组
- * [OUTPUT]: 对 window.NetflixDualSubtitles 提供 createSubtitleOverlay 工厂，负责双字幕视觉层
+ * [INPUT]: 依赖 DOM/Shadow DOM 渲染能力、字幕样式设置与 subtitleParser 输出的 cue 数组
+ * [OUTPUT]: 对 window.NetflixDualSubtitles 提供自动双字幕布局与独立视觉样式 overlay
  * [POS]: content 的显示层，被 content.js 按播放时间驱动
  * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
  */
+
+const SUBTITLE_LAYOUT_PRESETS = {
+  compact: { bottom: 14, gap: 4 },
+  balanced: { bottom: 18, gap: 8 },
+  spacious: { bottom: 22, gap: 16 }
+};
+
+const SUBTITLE_FONT_FAMILIES = {
+  system: '-apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif',
+  sans: '"Avenir Next", Avenir, "Helvetica Neue", sans-serif',
+  serif: 'Georgia, "Times New Roman", serif',
+  rounded: '"Arial Rounded MT Bold", "SF Pro Rounded", -apple-system, sans-serif'
+};
 
 window.NetflixDualSubtitles ??= {};
 window.NetflixDualSubtitles.createSubtitleOverlay = function createSubtitleOverlay() {
@@ -23,23 +36,59 @@ window.NetflixDualSubtitles.createSubtitleOverlay = function createSubtitleOverl
         all: initial;
       }
 
-      .subtitle {
+      .subtitle-stack {
         position: fixed;
         left: 50%;
-        transform: translateX(-50%);
+        bottom: var(--subtitle-stack-bottom, 18vh);
         z-index: 2147483647;
+        display: flex;
+        width: 100%;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--subtitle-stack-gap, 8px);
+        pointer-events: none;
+        transform: translateX(-50%);
+      }
+
+      .subtitle {
         display: grid;
+        width: 100%;
         gap: 4px;
-        max-width: min(86vw, 1280px);
         pointer-events: none;
         text-align: center;
       }
 
+      .subtitle[hidden] {
+        display: none;
+      }
+
       .subtitle[data-role="primary"] {
-        bottom: var(--primary-subtitle-offset, 26vh);
+        max-width: min(var(--primary-subtitle-max-width, 86vw), 1280px);
       }
 
       .subtitle[data-role="secondary"] {
+        max-width: min(var(--secondary-subtitle-max-width, 86vw), 1280px);
+      }
+
+      :host([data-layout="free"]) .subtitle-stack {
+        position: static;
+        display: block;
+        width: auto;
+        transform: none;
+      }
+
+      :host([data-layout="free"]) .subtitle {
+        position: fixed;
+        left: 50%;
+        z-index: 2147483647;
+        transform: translateX(-50%);
+      }
+
+      :host([data-layout="free"]) .subtitle[data-role="primary"] {
+        bottom: var(--primary-subtitle-offset, 26vh);
+      }
+
+      :host([data-layout="free"]) .subtitle[data-role="secondary"] {
         bottom: var(--secondary-subtitle-offset, 18vh);
       }
 
@@ -48,24 +97,39 @@ window.NetflixDualSubtitles.createSubtitleOverlay = function createSubtitleOverl
         max-width: 100%;
         margin-inline: auto;
         padding: 3px 10px 5px;
+        overflow-wrap: anywhere;
         border-radius: 4px;
-        background: rgba(0, 0, 0, 0.64);
-        color: #fff;
-        font: 700 var(--subtitle-size, 28px)/1.28 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
-        text-shadow: 0 2px 2px rgba(0, 0, 0, 0.8);
         white-space: pre-wrap;
       }
 
       .subtitle[data-role="primary"] .line {
+        background: var(--primary-subtitle-background, rgba(0, 0, 0, 0.64));
+        color: var(--primary-subtitle-color, #fff);
+        font-family: var(--primary-subtitle-font-family, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif);
         font-size: var(--primary-subtitle-size, 26px);
+        font-weight: var(--primary-subtitle-weight, 700);
+        line-height: var(--primary-subtitle-line-height, 1.28);
+        -webkit-text-stroke: var(--primary-subtitle-stroke-width, 1px) var(--primary-subtitle-stroke-color, #000);
+        paint-order: stroke fill;
+        text-shadow: 0 2px 2px rgba(0, 0, 0, 0.72);
       }
 
       .subtitle[data-role="secondary"] .line {
+        background: var(--secondary-subtitle-background, rgba(0, 0, 0, 0.64));
+        color: var(--secondary-subtitle-color, #fff);
+        font-family: var(--secondary-subtitle-font-family, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif);
         font-size: var(--secondary-subtitle-size, 28px);
+        font-weight: var(--secondary-subtitle-weight, 700);
+        line-height: var(--secondary-subtitle-line-height, 1.28);
+        -webkit-text-stroke: var(--secondary-subtitle-stroke-width, 1px) var(--secondary-subtitle-stroke-color, #000);
+        paint-order: stroke fill;
+        text-shadow: 0 2px 2px rgba(0, 0, 0, 0.72);
       }
     </style>
-    <div class="subtitle" data-role="primary" aria-live="off"></div>
-    <div class="subtitle" data-role="secondary" aria-live="off"></div>
+    <div class="subtitle-stack">
+      <div class="subtitle" data-role="primary" aria-live="off" hidden></div>
+      <div class="subtitle" data-role="secondary" aria-live="off" hidden></div>
+    </div>
   `;
 
   const primaryContainer = root.querySelector('[data-role="primary"]');
@@ -73,19 +137,59 @@ window.NetflixDualSubtitles.createSubtitleOverlay = function createSubtitleOverl
 
   return {
     applySettings(settings) {
-      host.style.setProperty("--primary-subtitle-size", `${settings.primaryFontSize}px`);
-      host.style.setProperty("--secondary-subtitle-size", `${settings.secondaryFontSize}px`);
+      const layoutPreset = SUBTITLE_LAYOUT_PRESETS[settings.subtitleLayoutPreset]
+        ?? SUBTITLE_LAYOUT_PRESETS.balanced;
+
+      host.dataset.layout = settings.subtitleLayoutPreset === "free" ? "free" : "stacked";
+      host.style.setProperty("--subtitle-stack-bottom", `${layoutPreset.bottom}vh`);
+      host.style.setProperty("--subtitle-stack-gap", `${layoutPreset.gap}px`);
       host.style.setProperty("--primary-subtitle-offset", `${settings.primaryVerticalOffset}vh`);
       host.style.setProperty("--secondary-subtitle-offset", `${settings.secondaryVerticalOffset}vh`);
+      applyRoleSettings(host, "primary", settings);
+      applyRoleSettings(host, "secondary", settings);
     },
 
     render({ primaryCues = [], secondaryCues = [] } = {}) {
       ensureMounted(host);
       primaryContainer.replaceChildren(...primaryCues.map((cue) => createLine(cue.text)));
       secondaryContainer.replaceChildren(...secondaryCues.map((cue) => createLine(cue.text)));
+      primaryContainer.hidden = primaryCues.length === 0;
+      secondaryContainer.hidden = secondaryCues.length === 0;
     }
   };
 };
+
+function applyRoleSettings(host, role, settings) {
+  const key = (suffix) => `${role}${suffix}`;
+  const textColor = colorWithOpacity(settings[key("TextColor")], settings[key("TextOpacity")]);
+  const backgroundColor = colorWithOpacity(
+    settings[key("BackgroundColor")],
+    settings[key("BackgroundOpacity")]
+  );
+  const fontFamily = SUBTITLE_FONT_FAMILIES[settings[key("FontFamily")]]
+    ?? SUBTITLE_FONT_FAMILIES.system;
+
+  host.style.setProperty(`--${role}-subtitle-size`, `${settings[key("FontSize")]}px`);
+  host.style.setProperty(`--${role}-subtitle-max-width`, `${settings[key("MaxWidth")]}vw`);
+  host.style.setProperty(`--${role}-subtitle-color`, textColor);
+  host.style.setProperty(`--${role}-subtitle-background`, backgroundColor);
+  host.style.setProperty(`--${role}-subtitle-font-family`, fontFamily);
+  host.style.setProperty(`--${role}-subtitle-weight`, settings[key("FontWeight")]);
+  host.style.setProperty(`--${role}-subtitle-line-height`, settings[key("LineHeight")]);
+  host.style.setProperty(`--${role}-subtitle-stroke-width`, `${settings[key("StrokeWidth")]}px`);
+  host.style.setProperty(`--${role}-subtitle-stroke-color`, settings[key("StrokeColor")]);
+}
+
+function colorWithOpacity(color, opacity) {
+  const normalized = String(color ?? "#000000").replace(/^#/, "");
+  const hex = normalized.length === 3
+    ? normalized.split("").map((value) => value + value).join("")
+    : normalized.padEnd(6, "0").slice(0, 6);
+  const channels = [0, 2, 4].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
+  const alpha = Math.max(0, Math.min(100, Number(opacity ?? 100))) / 100;
+
+  return `rgba(${channels[0]}, ${channels[1]}, ${channels[2]}, ${alpha})`;
+}
 
 function ensureMounted(host) {
   if (host.isConnected) return;
