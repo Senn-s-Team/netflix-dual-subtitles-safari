@@ -1,0 +1,79 @@
+<!--
+  [INPUT]: 依赖 popup.css 的样式与 popup.js 的配置绑定
+  [OUTPUT]: 对外提供 Safari 扩展弹窗双字幕选择与显示设置界面
+  [POS]: popup 模块的 DOM 壳，被 manifest action.default_popup 加载
+  [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+-->
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Netflix Dual Subtitles</title>
+    <link rel="stylesheet" href="./popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Netflix Dual Subtitles</h1>
+      </header>
+
+      <label class="row switch">
+        <span>启用字幕覆盖</span>
+        <input id="enabled" type="checkbox">
+      </label>
+
+      <label class="row switch">
+        <span>隐藏 Netflix 原生字幕</span>
+        <input id="hideNativeSubtitles" type="checkbox">
+      </label>
+
+      <section class="track-grid" aria-label="字幕轨道">
+        <div class="column">
+          <label class="field">
+            <span>第一字幕</span>
+            <select id="primaryTrackKey"></select>
+          </label>
+
+          <label class="field">
+            <span>第一字号</span>
+            <input id="primaryFontSize" type="range" min="18" max="44" step="1">
+          </label>
+
+          <label class="field">
+            <span>第一位置</span>
+            <input id="primaryVerticalOffset" type="range" min="8" max="42" step="1">
+          </label>
+        </div>
+
+        <div class="column">
+          <label class="field">
+            <span>第二字幕</span>
+            <select id="secondaryTrackKey"></select>
+          </label>
+
+          <label class="field">
+            <span>第二字号</span>
+            <input id="secondaryFontSize" type="range" min="18" max="44" step="1">
+          </label>
+
+          <label class="field">
+            <span>第二位置</span>
+            <input id="secondaryVerticalOffset" type="range" min="8" max="42" step="1">
+          </label>
+        </div>
+      </section>
+
+      <label class="field">
+        <span>字幕列表</span>
+        <output id="trackStatus">检测中</output>
+      </label>
+
+      <label class="field">
+        <span>时间偏移 ms</span>
+        <input id="timingOffsetMs" type="number" step="100">
+      </label>
+    </main>
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

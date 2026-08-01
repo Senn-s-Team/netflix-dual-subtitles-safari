@@ -1,0 +1,391 @@
+/**
+ * [INPUT]: 依赖 window.NetflixDualSubtitles 的轨道归一化、字幕加载、overlay 渲染与 page bridge 播放器查询
+ * [OUTPUT]: 对外提供 Netflix 页面上的双字幕同步流程与轨道列表查询
+ * [POS]: content 模块入口，连接 Safari 隔离世界与 Netflix 页面主世界
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
+
+const runtime = globalThis.browser ?? globalThis.chrome;
+const modules = window.NetflixDualSubtitles;
+
+const DEFAULT_SETTINGS = {
+  enabled: true,
+  hideNativeSubtitles: true,
+  primaryTrackKey: "",
+  primaryLanguage: "",
+  secondaryLanguage: "en",
+  secondaryTrackKey: "",
+  primaryFontSize: 26,
+  secondaryFontSize: 28,
+  primaryVerticalOffset: 26,
+  secondaryVerticalOffset: 18,
+  timingOffsetMs: 0
+};
+
+const state = {
+  settings: { ...DEFAULT_SETTINGS },
+  video: null,
+  tracks: [],
+  primaryCues: [],
+  secondaryCues: [],
+  loadStatus: {
+    primary: { cueCount: 0, error: "" },
+    secondary: { cueCount: 0, error: "" }
+  },
+  tickId: 0,
+  refreshToken: 0,
+  playerQueryId: 0,
+  locationId: 0,
+  watchId: ""
+};
+
+const overlay = modules.createSubtitleOverlay();
+const store = modules.createSubtitleStore();
+
+boot();
+
+async function boot() {
+  state.settings = await readSettings();
+  overlay.applySettings(state.settings);
+  updateNativeSubtitleVisibility();
+  await injectPageBridge();
+  bindRuntimeMessages();
+  bindPopupMessages();
+  bindBridgeMessages();
+  watchLocation();
+  watchVideoElement();
+  startPlayerTrackQueries();
+}
+
+function injectPageBridge() {
+  return new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = runtime.runtime.getURL("src/page/netflix-page-bridge.js");
+    script.async = false;
+    script.onload = () => {
+      script.remove();
+      resolve();
+    };
+    script.onerror = () => resolve();
+    (document.documentElement || document.head).append(script);
+  });
+}
+
+function bindRuntimeMessages() {
+  runtime.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") return;
+
+    for (const [key, change] of Object.entries(changes)) {
+      state.settings[key] = change.newValue;
+    }
+
+    overlay.applySettings(state.settings);
+    updateNativeSubtitleVisibility();
+    void refreshSelectedSubtitles();
+  });
+}
+
+function bindPopupMessages() {
+  runtime.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "NETFLIX_DUAL_SUBTITLES_GET_STATE") return false;
+
+    sendResponse({
+      settings: state.settings,
+      tracks: state.tracks,
+      loadStatus: state.loadStatus,
+      url: location.href
+    });
+
+    if (isWatchPage()) requestPlayerTracks();
+    return true;
+  });
+}
+
+function bindBridgeMessages() {
+  window.addEventListener("message", (event) => {
+    if (event.source !== window) return;
+    if (event.data?.source !== "netflix-dual-subtitles-bridge") return;
+    if (event.data?.type === "load-subtitle-result" || event.data?.type === "resolve-track-url-result") return;
+    if (!isWatchPage()) return;
+    syncWatchState();
+
+    const tracks = modules.normalizeTracks(event.data.payload);
+    if (tracks.length === 0) return;
+
+    state.tracks = mergeTracks(state.tracks, tracks);
+    void refreshSelectedSubtitles();
+  });
+}
+
+function watchVideoElement() {
+  const observer = new MutationObserver(() => bindVideo(document.querySelector("video")));
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  bindVideo(document.querySelector("video"));
+}
+
+function watchLocation() {
+  syncWatchState();
+  state.locationId = setInterval(syncWatchState, 500);
+}
+
+function syncWatchState() {
+  const nextWatchId = readWatchId();
+  if (nextWatchId === state.watchId) return;
+
+  state.watchId = nextWatchId;
+  clearSubtitleState();
+
+  if (nextWatchId) {
+    updateNativeSubtitleVisibility();
+    requestPlayerTracks();
+  } else {
+    updateNativeSubtitleVisibility();
+    postNativeSubtitlePreference();
+  }
+}
+
+function clearSubtitleState() {
+  state.refreshToken += 1;
+  state.tracks = [];
+  state.primaryCues = [];
+  state.secondaryCues = [];
+  state.loadStatus = {
+    primary: { cueCount: 0, error: "" },
+    secondary: { cueCount: 0, error: "" }
+  };
+  store.clear();
+  overlay.render();
+}
+
+function startPlayerTrackQueries() {
+  requestPlayerTracks();
+  if (state.playerQueryId) clearInterval(state.playerQueryId);
+  state.playerQueryId = setInterval(requestPlayerTracks, 2500);
+}
+
+function requestPlayerTracks() {
+  if (!isWatchPage()) {
+    clearSubtitleState();
+    postNativeSubtitlePreference();
+    return;
+  }
+
+  window.postMessage({
+    source: "netflix-dual-subtitles-bridge",
+    type: "query-player-tracks"
+  }, window.location.origin);
+
+  postNativeSubtitlePreference();
+}
+
+function bindVideo(video) {
+  if (!video || video === state.video) return;
+
+  if (state.video) {
+    state.video.removeEventListener("timeupdate", renderForCurrentTime);
+    state.video.removeEventListener("seeked", renderForCurrentTime);
+    state.video.removeEventListener("ratechange", renderForCurrentTime);
+    state.video.removeEventListener("play", startFrameLoop);
+    state.video.removeEventListener("pause", stopFrameLoop);
+  }
+
+  state.video = video;
+  video.addEventListener("timeupdate", renderForCurrentTime);
+  video.addEventListener("seeked", renderForCurrentTime);
+  video.addEventListener("ratechange", renderForCurrentTime);
+  video.addEventListener("play", startFrameLoop);
+  video.addEventListener("pause", stopFrameLoop);
+  startFrameLoop();
+}
+
+async function refreshSelectedSubtitles() {
+  if (!isWatchPage()) {
+    clearSubtitleState();
+    return;
+  }
+
+  const token = ++state.refreshToken;
+  const [primaryTrack, secondaryTrack] = [
+    pickTrack(state.tracks, state.settings.primaryTrackKey, state.settings.primaryLanguage),
+    pickTrack(state.tracks, state.settings.secondaryTrackKey, state.settings.secondaryLanguage)
+  ];
+
+  const [primaryCues, secondaryCues] = await Promise.all([
+    loadTrackCues("primary", primaryTrack),
+    loadTrackCues("secondary", secondaryTrack)
+  ]);
+
+  if (token !== state.refreshToken) return;
+
+  state.primaryCues = primaryCues;
+  state.secondaryCues = secondaryCues;
+  renderForCurrentTime();
+}
+
+async function loadTrackCues(role, track) {
+  if (!track) {
+    state.loadStatus[role] = { cueCount: 0, error: "" };
+    return [];
+  }
+
+  try {
+    const cues = await store.load(track);
+    state.loadStatus[role] = { cueCount: cues.length, error: "" };
+    return cues;
+  } catch (error) {
+    state.loadStatus[role] = { cueCount: 0, error: error?.message ?? String(error) };
+    return [];
+  }
+}
+
+function renderForCurrentTime() {
+  if (!state.video || !state.settings.enabled || !isWatchPage()) {
+    overlay.render();
+    return;
+  }
+
+  const timeMs = state.video.currentTime * 1000 + state.settings.timingOffsetMs;
+  overlay.render({
+    primaryCues: dedupeActiveCues(activeAtTime(state.primaryCues, timeMs)),
+    secondaryCues: dedupeActiveCues(activeAtTime(state.secondaryCues, timeMs))
+  });
+}
+
+function updateNativeSubtitleVisibility() {
+  const shouldHide = isWatchPage() && state.settings.enabled && state.settings.hideNativeSubtitles;
+  let style = document.querySelector("#netflix-dual-subtitles-native-hide-style");
+
+  if (!shouldHide) {
+    style?.remove();
+    postNativeSubtitlePreference();
+    return;
+  }
+
+  if (style) return;
+
+  style = document.createElement("style");
+  style.id = "netflix-dual-subtitles-native-hide-style";
+  style.textContent = `
+    .player-timedtext,
+    .player-timedtext-text-container,
+    .image-based-subtitles,
+    .image-based-subtitles svg,
+    .image-based-subtitles img,
+    [data-uia="player-timedtext"],
+    [data-uia="player-subtitle"],
+    [data-uia*="timedtext"],
+    [data-uia*="subtitle"],
+    [class*="player-timedtext"],
+    [class*="timedtext"],
+    [class*="TimedText"],
+    [class*="subtitle"],
+    [class*="Subtitle"] {
+      opacity: 0 !important;
+      visibility: hidden !important;
+      display: none !important;
+    }
+  `;
+  document.documentElement.append(style);
+  postNativeSubtitlePreference();
+}
+
+function postNativeSubtitlePreference() {
+  window.postMessage({
+    source: "netflix-dual-subtitles-bridge",
+    type: "set-native-subtitles-hidden",
+    hidden: isWatchPage() && state.settings.enabled && state.settings.hideNativeSubtitles
+  }, window.location.origin);
+}
+
+function startFrameLoop() {
+  stopFrameLoop();
+
+  const frame = () => {
+    renderForCurrentTime();
+    state.tickId = requestAnimationFrame(frame);
+  };
+
+  state.tickId = requestAnimationFrame(frame);
+}
+
+function stopFrameLoop() {
+  if (!state.tickId) return;
+  cancelAnimationFrame(state.tickId);
+  state.tickId = 0;
+}
+
+function mergeTracks(existing, incoming) {
+  const byKey = new Map(existing.map((track) => [track.key, track]));
+
+  for (const track of incoming) {
+    byKey.set(track.key, { ...byKey.get(track.key), ...track });
+  }
+
+  return [...byKey.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function activeAtTime(cues, timeMs) {
+  return cues.filter((cue) => cue.startMs <= timeMs && timeMs <= cue.endMs);
+}
+
+function dedupeActiveCues(cues) {
+  const seen = new Set();
+  const result = [];
+
+  for (const cue of cues) {
+    const key = normalizeCueText(cue.text);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(cue);
+  }
+
+  return result;
+}
+
+function normalizeCueText(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isWatchPage() {
+  return Boolean(readWatchId());
+}
+
+function readWatchId() {
+  return location.pathname.match(/^\/watch\/([^/?#]+)/)?.[1] ?? "";
+}
+
+function pickTrack(tracks, trackKey, language) {
+  if (trackKey) {
+    const selected = tracks.find((track) => track.key === trackKey);
+    if (selected) return selected;
+  }
+
+  const needle = String(language ?? "").toLowerCase();
+  if (!needle) return null;
+
+  return tracks.find((track) => track.language.toLowerCase() === needle)
+    ?? tracks.find((track) => track.language.toLowerCase().startsWith(needle))
+    ?? null;
+}
+
+function readSettings() {
+  return new Promise((resolve) => {
+    runtime.storage.local.get(DEFAULT_SETTINGS, (stored) => {
+      resolve(normalizeSettings(stored));
+    });
+  });
+}
+
+function normalizeSettings(stored) {
+  const settings = { ...DEFAULT_SETTINGS, ...stored };
+
+  if (stored.fontSize !== undefined && stored.secondaryFontSize === undefined) {
+    settings.secondaryFontSize = stored.fontSize;
+  }
+
+  if (stored.verticalOffset !== undefined && stored.secondaryVerticalOffset === undefined) {
+    settings.secondaryVerticalOffset = stored.verticalOffset;
+  }
+
+  return settings;
+}

@@ -1,0 +1,83 @@
+/*
+ * [INPUT]: 依赖 popup.html 的双列表单结构
+ * [OUTPUT]: 对外提供紧凑 Safari 弹窗双字幕设置样式
+ * [POS]: popup 模块的样式层，被 popup.html 加载
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
+
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+}
+
+body {
+  width: 360px;
+  margin: 0;
+  color: CanvasText;
+  background: Canvas;
+}
+
+main {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.row,
+.field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.track-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.column {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.switch {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+input[type="text"],
+input[type="number"],
+select,
+output {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, CanvasText 24%, transparent);
+  border-radius: 6px;
+  color: CanvasText;
+  background: Canvas;
+  font: inherit;
+}
+
+select {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+output {
+  display: block;
+  color: color-mix(in srgb, CanvasText 70%, transparent);
+}
+
+input[type="range"] {
+  width: 100%;
+}
